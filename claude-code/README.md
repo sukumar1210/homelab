@@ -67,8 +67,9 @@ else still works.
    It runs as root (the RAPL counter and the EC are root-only), writes
    `/srv/data/power/YYYY-MM.csv` plus `latest`, and the data directory is
    owned by you so it can be cleared without sudo. Tuning knobs are in the
-   unit: `POWER_BASE_W` (non-CPU draw, default 10) and `POWER_FAN_MAX_W`
-   (fan at full speed, default 2.5).
+   unit: `POWER_BASE_W` (fixed non-CPU draw, default 6),
+   `POWER_BACKLIGHT_MAX_W` (backlight at full brightness, default 4) and
+   `POWER_FAN_MAX_W` (fan at full speed, default 2.5).
 
 5. Check it renders:
 
@@ -82,7 +83,8 @@ These are node-01 only and need rechecking on other hardware:
 
 - **Power is an estimate.** No sensor measures whole-system draw here (the
   AC adapter reports only online/offline and the battery is dead):
-  `sys_w = RAPL CPU package + POWER_BASE_W + fan`.
+  `sys_w = RAPL CPU package + POWER_BASE_W + backlight + fan`, with the
+  backlight scaled by brightness and zero when `bl_power` says it is off.
 - **Fan speed** is read from EC register `0xB2` (`RPM1` in the DSDT), which
   holds a tach period: ~190 at idle, ~40 at full speed. Another model will
   have a different register; see the docstring in

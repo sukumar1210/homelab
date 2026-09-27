@@ -5,12 +5,17 @@ Nothing on this laptop measures system draw: the AC adapter reports only
 online/offline, and the battery (the only whole-system gauge a laptop has)
 is dead. So sys_w is an ESTIMATE:
 
-    sys_w = cpu_w + BASE_W + fan_w
+    sys_w = cpu_w + BASE_W + backlight_w + fan_w
 
 cpu_w is MEASURED from the RAPL package counter (root-only, hence a root
 service); it is the part that moves with load. BASE_W is everything else
-(panel + backlight, HDD, chipset, RAM, Wi-Fi) and is a guess, so it is a knob:
+(HDD, chipset, RAM, Wi-Fi, panel electronics) and is a guess, so it is a knob:
 set POWER_BASE_W in the unit. Check it once against a wall meter if you can.
+
+backlight_w = BACKLIGHT_MAX_W * brightness / max_brightness, and 0 when
+bl_power reports it off. It is modelled separately because the backlight is
+the one non-CPU load that changes (and it stays lit behind a closed lid,
+since logind ignores the lid on this node).
 For a true reading, a metering smart plug is the only option.
 
 The fan has no Linux driver; its tachometer lives in the embedded controller
@@ -25,11 +30,12 @@ Files in DATA_DIR (delete any whenever; the logger starts over):
   YYYY-MM.csv   ts,cpu_w,fan_pct,sys_w,sys_wh   one row per interval
   latest        "ts sys_w e month_kwh fan_pct"  read by the status line (e = estimated)
 """
-import csv, os, time
+import csv, glob, os, time
 
 DATA_DIR = os.environ.get("POWER_DATA_DIR", "/srv/data/power")
-BASE_W = float(os.environ.get("POWER_BASE_W", "10"))
+BASE_W = float(os.environ.get("POWER_BASE_W", "6"))
 FAN_MAX_W = float(os.environ.get("POWER_FAN_MAX_W", "2.5"))  # 5V x 0.5A
+BACKLIGHT_MAX_W = float(os.environ.get("POWER_BACKLIGHT_MAX_W", "4"))  # 15.6" LED at full
 INTERVAL = 30
 RAPL = "/sys/class/powercap/intel-rapl:0"
 EC_FAN_REG = 0xB2
@@ -68,11 +74,22 @@ def ec_read(addr):
         return None
 
 
+def backlight_w():
+    for bl in glob.glob("/sys/class/backlight/*"):
+        b, m = read(f"{bl}/brightness"), read(f"{bl}/max_brightness")
+        if read(f"{bl}/bl_power") not in (None, "0") or not b or not m or int(m) == 0:
+            return 0.0
+        return BACKLIGHT_MAX_W * int(b) / int(m)
+    return 0.0
+
+
 def fan_pct():
-    period = ec_read(EC_FAN_REG)
-    if not period or period == 0xFF:
-        return None              # stopped, or a garbled read
-    return min(100.0, FAN_FULL_PERIOD / period * 100)
+    for _ in range(3):           # the EC is sometimes busy with the kernel's own traffic
+        period = ec_read(EC_FAN_REG)
+        if period and period != 0xFF:
+            return min(100.0, FAN_FULL_PERIOD / period * 100)
+        time.sleep(0.05)
+    return None                  # stopped, or unreadable
 
 
 def month_wh(path):
@@ -109,7 +126,7 @@ def main():
         fan = fan_pct()
         fan_w = FAN_MAX_W * (fan / 100) ** 3 if fan is not None else 0.0
 
-        sys_w = cpu_w + BASE_W + fan_w
+        sys_w = cpu_w + BASE_W + backlight_w() + fan_w
         sys_wh = sys_w * dt / 3600
 
         path = os.path.join(DATA_DIR, time.strftime("%Y-%m.csv", time.localtime(now)))

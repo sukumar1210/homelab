@@ -22,7 +22,8 @@ Description=Whole-system power and energy logger (RAPL CPU + fixed base, estimat
 [Service]
 ExecStart=/usr/bin/python3 ${SCRIPT_PATH}
 Environment=POWER_DATA_DIR=${DATA_DIR}
-Environment=POWER_BASE_W=10
+Environment=POWER_BASE_W=6
+Environment=POWER_BACKLIGHT_MAX_W=4
 Environment=POWER_FAN_MAX_W=2.5
 UMask=0022
 Restart=always
