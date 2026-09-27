@@ -19,10 +19,12 @@ since logind ignores the lid on this node).
 For a true reading, a metering smart plug is the only option.
 
 The fan has no Linux driver; its tachometer lives in the embedded controller
-at 0xB2 (RPM1 in the DSDT), found by probing under load. It holds a PERIOD,
-so it falls as speed rises: ~190 idle, ~40 at full speed (held under
-sustained all-core load). fan_pct = FAN_FULL_PERIOD / period, and
-fan_w = FAN_MAX_W * fan_pct^3 (fan affinity law). The EC is read over
+as a 16-bit little-endian PERIOD at 0xB2/0xB3 (RPM1/RPM2 in the DSDT), found
+by a probe labelled by ear. It falls as speed rises: ~640 silent, ~550 quiet,
+~450 medium, ~296 loud (full speed under sustained all-core load). Reading
+only 0xB2 looked like a byte that wrapped at random -- it was the low half.
+fan_pct = FAN_FULL_PERIOD / period, and fan_w = FAN_MAX_W * fan_pct^3 (fan
+affinity law). The EC is read over
 /dev/port with the standard ACPI read command (0x80), as nbfc-linux does,
 because Debian's kernel lacks ec_sys. Read-only, one byte per interval.
 
@@ -38,8 +40,8 @@ FAN_MAX_W = float(os.environ.get("POWER_FAN_MAX_W", "2.5"))  # 5V x 0.5A
 BACKLIGHT_MAX_W = float(os.environ.get("POWER_BACKLIGHT_MAX_W", "4"))  # 15.6" LED at full
 INTERVAL = 30
 RAPL = "/sys/class/powercap/intel-rapl:0"
-EC_FAN_REG = 0xB2
-FAN_FULL_PERIOD = 40     # ponytail: measured once; re-probe if the fan is replaced
+EC_FAN_LO, EC_FAN_HI = 0xB2, 0xB3
+FAN_FULL_PERIOD = 296    # ponytail: measured once; re-probe if the fan is replaced
 
 
 def read(path):
@@ -84,10 +86,15 @@ def backlight_w():
 
 
 def fan_pct():
-    for _ in range(3):           # the EC is sometimes busy with the kernel's own traffic
-        period = ec_read(EC_FAN_REG)
-        if period and period != 0xFF:
-            return min(100.0, FAN_FULL_PERIOD / period * 100)
+    # Retry: the EC is sometimes busy with the kernel's own traffic, and the
+    # two bytes are read separately, so a high byte that changed across the
+    # low-byte read means the counter rolled over mid-read.
+    for _ in range(3):
+        hi, lo, hi2 = ec_read(EC_FAN_HI), ec_read(EC_FAN_LO), ec_read(EC_FAN_HI)
+        if None not in (hi, lo, hi2) and hi == hi2:
+            period = hi << 8 | lo
+            if 0 < period < 0xFFFF:
+                return min(100.0, FAN_FULL_PERIOD / period * 100)
         time.sleep(0.05)
     return None                  # stopped, or unreadable
 

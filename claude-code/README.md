@@ -86,7 +86,7 @@ These are node-01 only and need rechecking on other hardware:
   `sys_w = RAPL CPU package + POWER_BASE_W + backlight + fan`, with the
   backlight scaled by brightness and zero when `bl_power` says it is off.
 - **Fan speed** is read from EC register `0xB2` (`RPM1` in the DSDT), which
-  holds a tach period: ~190 at idle, ~40 at full speed. Another model will
+  (with `0xB3` as the high byte, `RPM1`/`RPM2`) holds a 16-bit tach period: ~640 silent, ~296 at full speed. Another model will
   have a different register; see the docstring in
   `bin/service-scripts/power-logger.py`.
 - **CPU temperature** uses the `x86_pkg_temp` thermal zone (Intel).
