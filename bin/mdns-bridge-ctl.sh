@@ -140,6 +140,14 @@ remove_service() {
     echo "✓ Service and script removed."
 }
 
+# Non-interactive, for the `homelab` command; with no argument, the menu below.
+case "${1:-}" in
+    install) install_service; exit ;;
+    remove)  remove_service; exit ;;
+    "") ;;
+    *) echo "usage: $0 [install|remove]" >&2; exit 2 ;;
+esac
+
 echo "mDNS Unicast Bridge Service Manager"
 echo "===================================="
 echo ""

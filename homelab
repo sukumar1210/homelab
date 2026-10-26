@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# homelab: one command for everything this repository puts on a machine.
+#
+#   homelab                         status of everything (the default)
+#   homelab status                  each component, and the node checks; exit 1 if anything is wrong
+#   homelab node check              the machine prep, read-only
+#   homelab node setup              fix what `node check` finds (sudo where it must)
+#   homelab <component> install     install or reinstall one component (re-runnable)
+#   homelab <component> remove      remove it (its data stays)
+#   homelab help
+#
+# Components: power-logger, mdns-bridge, nextboot, statusline.
+#
+# WHAT IS HERE AND WHAT IS NOT. This repository owns the MACHINE: the /srv layout (code in /srv/sources, runtime
+# state in /srv/ops, data in /srv/data), the tools and settings the projects on it assume (docker and its group,
+# linger, git-lfs), and the machine's own services. Each project deploys ITSELF from its own repository, and this
+# only names their entry points (README, "Projects on this node"); it never installs or restarts them.
+#
+# A unit that runs a file which no longer exists is the failure this exists to make visible: after the move to
+# /srv/sources, mdns-unicast-bridge.service kept running /home/sukumar/bin/... and restarted every few seconds,
+# reported nowhere. `status` checks the file each unit runs, not only whether the unit is active.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+SRV="${SRV:-/srv}"
+PROBLEMS=0
+
+ok()   { printf '  \033[32mok\033[0m    %s\n' "$*"; }
+bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; PROBLEMS=$((PROBLEMS + 1)); }
+warn() { printf '  \033[33mwarn\033[0m  %s\n' "$*"; }
+info() { printf '  ..    %s\n' "$*"; }
+
+# ------------------------------------------------------------------------------------------------ components
+# name -> "unit|script the unit must run (relative to this repo, or -)|installer (relative)"
+declare -A COMPONENT=(
+    [power-logger]="power-logger.service|bin/service-scripts/power-logger.py|bin/power-logger-ctl.sh"
+    [mdns-bridge]="mdns-unicast-bridge.service|bin/service-scripts/mdns-unicast-bridge.py|bin/mdns-bridge-ctl.sh"
+    [nextboot]="nextboot.service|-|bin/setup-nextboot.sh"
+)
+ORDER=(power-logger mdns-bridge nextboot statusline)
+
+unit_status() {   # name
+    local unit script ctl
+    IFS='|' read -r unit script ctl <<<"${COMPONENT[$1]}"
+    if ! systemctl cat "$unit" >/dev/null 2>&1; then
+        bad "$1: not installed (homelab $1 install)"; return
+    fi
+    local enabled active runs
+    enabled="$(systemctl is-enabled "$unit" 2>/dev/null)"
+    active="$(systemctl is-active "$unit" 2>/dev/null)"
+    if [ "$script" != "-" ]; then
+        runs="$(systemctl cat "$unit" 2>/dev/null | sed -n 's/^ExecStart=[^ ]* \([^ ]*\).*/\1/p' | head -1)"
+        if [ ! -f "$runs" ]; then
+            bad "$1: $unit runs $runs, which does not exist ($active). Fix: homelab $1 install"; return
+        elif [ "$(realpath "$runs")" != "$(realpath "$HERE/$script")" ]; then
+            warn "$1: $unit runs $runs, not this checkout's $script. Reinstall to switch: homelab $1 install"
+        fi
+    fi
+    if [ "$unit" = nextboot.service ]; then           # oneshot: judged by its last run, not by staying active
+        local result
+        result="$(systemctl show "$unit" -p Result --value)"
+        [ "$enabled" = enabled ] && [ "$result" = success ] \
+            && ok "$1: enabled, last run $result" || bad "$1: $enabled, last run $result"
+        return
+    fi
+    [ "$enabled" = enabled ] && [ "$active" = active ] && ok "$1: $active, $enabled" || bad "$1: $active, $enabled"
+}
+
+STATUSLINE_SRC="claude-code/node-01.statusline.sh"
+STATUSLINE_DST="$HOME/.claude/statusline.sh"
+
+statusline_status() {
+    if [ ! -f "$STATUSLINE_DST" ]; then
+        bad "statusline: $STATUSLINE_DST missing (homelab statusline install)"; return
+    fi
+    cmp -s "$STATUSLINE_DST" "$HERE/$STATUSLINE_SRC" || {
+        warn "statusline: $STATUSLINE_DST differs from $STATUSLINE_SRC (homelab statusline install to update)"; return; }
+    local cmd
+    cmd="$(jq -r '.statusLine.command // empty' "$HOME/.claude/settings.json" 2>/dev/null)"
+    [ "$cmd" = "~/.claude/statusline.sh" ] || [ "$cmd" = "$STATUSLINE_DST" ] \
+        && ok "statusline: installed and configured" \
+        || bad "statusline: settings.json does not point at it (homelab statusline install)"
+}
+
+statusline_install() {
+    mkdir -p "$HOME/.claude"
+    install -m 755 "$HERE/$STATUSLINE_SRC" "$STATUSLINE_DST"
+    local f="$HOME/.claude/settings.json"
+    [ -f "$f" ] || echo '{}' > "$f"
+    cp -p "$f" "$f.bak-homelab"                       # one previous copy, so a bad merge is undoable
+    jq '.statusLine = {"type":"command","command":"~/.claude/statusline.sh","padding":0,"refreshInterval":10}' "$f" \
+        > "$f.tmp" && mv "$f.tmp" "$f"
+    echo "installed $STATUSLINE_DST and set statusLine in $f (previous copy: $f.bak-homelab)"
+}
+
+component() {   # name action
+    local name="$1" action="${2:-}"
+    if [ "$name" = statusline ]; then
+        case "$action" in
+            install) statusline_install ;;
+            remove)  rm -f "$STATUSLINE_DST"; echo "removed $STATUSLINE_DST (settings.json left as is)" ;;
+            status|"") statusline_status ;;
+            *) echo "usage: homelab statusline install|remove|status" >&2; exit 2 ;;
+        esac
+        return
+    fi
+    [ -n "${COMPONENT[$name]:-}" ] || { echo "unknown component '$name' (${ORDER[*]})" >&2; exit 2; }
+    local unit script ctl
+    IFS='|' read -r unit script ctl <<<"${COMPONENT[$name]}"
+    case "$action" in
+        install)   if [ "$name" = nextboot ]; then "$HERE/$ctl"; else "$HERE/$ctl" install; fi ;;
+        remove)    if [ "$name" = nextboot ]; then
+                       sudo systemctl disable --now "$unit" && sudo rm -f "/etc/systemd/system/$unit" \
+                           && sudo systemctl daemon-reload && echo "removed $unit"
+                   else "$HERE/$ctl" remove; fi ;;
+        status|"") unit_status "$name" ;;
+        *) echo "usage: homelab $name install|remove|status" >&2; exit 2 ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------------------------ the node
+#: command -> the Debian package that provides it
+declare -A PACKAGE=([git]=git [make]=make [python3]=python3 [curl]=curl [jq]=jq [gawk]=gawk [docker]=docker.io
+                    [git-lfs]=git-lfs)
+
+node() {   # check|setup
+    local mode="${1:-check}" missing=() d
+    [ "$mode" = check ] || [ "$mode" = setup ] || { echo "usage: homelab node check|setup" >&2; exit 2; }
+    echo "== the /srv layout: code in sources, runtime state in ops, data in data"
+    for d in sources ops data; do
+        if [ -d "$SRV/$d" ] && [ "$(stat -c %U "$SRV/$d")" = "$USER" ]; then ok "$SRV/$d (yours)"
+        elif [ "$mode" = setup ]; then sudo mkdir -p "$SRV/$d" && sudo chown "$USER": "$SRV/$d" && ok "made $SRV/$d"
+        else bad "$SRV/$d missing or not yours (homelab node setup)"; fi
+        if [ "$(readlink -f "$HOME/$d" 2>/dev/null)" = "$(readlink -f "$SRV/$d")" ]; then ok "~/$d -> $SRV/$d"
+        elif [ -e "$HOME/$d" ] && [ ! -L "$HOME/$d" ]; then
+            bad "~/$d is a real directory, not a link to $SRV/$d: move its contents by hand, then homelab node setup"
+        elif [ "$mode" = setup ]; then ln -sfn "$SRV/$d" "$HOME/$d" && ok "linked ~/$d -> $SRV/$d"
+        else bad "~/$d does not link to $SRV/$d (homelab node setup)"; fi
+    done
+
+    echo "== tools the projects here assume"
+    for c in git make python3 curl jq gawk docker git-lfs; do
+        if [ "$c" = git-lfs ]; then git lfs version >/dev/null 2>&1 && ok "git-lfs" && continue
+        else command -v "$c" >/dev/null && ok "$c" && continue; fi
+        missing+=("${PACKAGE[$c]}")
+        [ "$mode" = setup ] || bad "$c is not installed (homelab node setup: apt ${PACKAGE[$c]})"
+    done
+    if [ "$mode" = setup ] && [ ${#missing[@]} -gt 0 ]; then
+        sudo apt-get install -y "${missing[@]}" && ok "installed ${missing[*]}" || bad "apt could not install ${missing[*]}"
+    fi
+
+    echo "== docker for $USER, and user services that survive logout"
+    if id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then ok "$USER is in the docker group"
+    elif [ "$mode" = setup ]; then sudo usermod -aG docker "$USER" && warn "added $USER to docker: log out and in for it to apply"
+    else bad "$USER is not in the docker group (homelab node setup)"; fi
+    docker ps >/dev/null 2>&1 && ok "docker answers" || bad "docker does not answer (daemon down, or the group not yet applied)"
+    if loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q '=yes'; then ok "linger is on (user services run while logged out)"
+    elif [ "$mode" = setup ]; then sudo loginctl enable-linger "$USER" && ok "linger turned on"
+    else bad "linger is off: user services (the tick recorder) stop at logout (homelab node setup)"; fi
+}
+
+# ------------------------------------------------------------------------------------------------ main
+usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+case "${1:-status}" in
+    status)
+        echo "== components"
+        for c in "${ORDER[@]}"; do component "$c" status; done
+        node check
+        [ "$PROBLEMS" -eq 0 ] && echo "all good" || { echo "$PROBLEMS problem(s)"; exit 1; } ;;
+    node)       node "${2:-check}"; [ "$PROBLEMS" -eq 0 ] || exit 1 ;;
+    help|-h|--help) usage ;;
+    *)          component "$1" "${2:-status}"; [ "$PROBLEMS" -eq 0 ] || exit 1 ;;
+esac
