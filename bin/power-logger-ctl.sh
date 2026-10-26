@@ -54,6 +54,14 @@ remove_service() {
     echo "✓ Service removed. Data left in ${DATA_DIR}."
 }
 
+# Non-interactive, for the `homelab` command; with no argument, the menu below.
+case "${1:-}" in
+    install) install_service; exit ;;
+    remove)  remove_service; exit ;;
+    "") ;;
+    *) echo "usage: $0 [install|remove]" >&2; exit 2 ;;
+esac
+
 echo "Power Logger Service Manager"
 echo "============================"
 echo ""
