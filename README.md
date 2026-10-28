@@ -21,7 +21,7 @@ all of it:
 | `nextboot` | queues the current OS as the next EFI boot (`bin/setup-nextboot.sh`) | `homelab nextboot install` |
 | `backup` | a restic snapshot of `/srv/data` and the secrets to rebuild, every night at 17:30, onto the archive disk ([Backups](#backups)) | `homelab backup install` |
 | `statusline` | the Claude Code status line ([claude-code/README.md](claude-code/README.md)) | `homelab statusline install` |
-| `claude-later` | queues a message for a Claude session at a set time, delivered by a user timer even if the session has stopped ([claude-code/README.md](claude-code/README.md#claude-later)) | `homelab claude-later install` |
+| `later` | runs a command or script, or sends a message to a Claude session, at a set time; a user timer per job, so it fires after logout ([later](#later)) | `homelab later install` |
 
 `homelab status` checks more than "is it active": for each unit it checks that the file the unit runs **exists and is
 this checkout's**. After the move to `/srv/sources`, `mdns-unicast-bridge.service` still ran
@@ -83,3 +83,36 @@ homelab backup restic restore latest --target /tmp/restore --include /srv/data/a
 would protect nothing here, and it would have to live on the SSD that the backup exists to outlive. Both disks share
 one machine, so a fire, theft or power surge takes both copies. An off-site copy is a second repository with its own
 password, filled by `restic copy`.
+
+## later
+
+`later` is a one-shot job queue: it runs something at a set time. Each job is a transient systemd user timer, so it
+fires after logout and needs no long-running process.
+
+```
+homelab later install                       # copies bin/later to ~/.local/bin/later
+later 15:00 run ./check.sh --quiet          # a script, from the current directory
+later "tomorrow 09:20" run 'make status | tail -5 > /tmp/status.txt'
+later 15:00 claude research-1 "check JPL depth and report"
+later list                                  # id, time, kind, what
+later cancel <id>
+journalctl --user -u later-<id>             # a job's output and exit status
+```
+
+`<when>` is anything `date -d` reads; a time already past is refused. After `run`, one argument is a shell command line
+(pipes, `&&`, redirects); several are a command and its arguments, kept exactly as given. A run job gets your `PATH` and
+the directory you queued it from, not the rest of your shell's environment: a script that needs more sets it up itself.
+
+**Claude jobs.** The session is the name `claude agents` shows, or its id. A running session (idle or busy) gets the
+message through SendMessage, relayed by a throwaway `claude -p --model haiku`: the only way into a live session from
+outside it. The session sees a message from another session, prefixed `Queued message from the user (later, <time>)`,
+and acts on it within its own permissions; it does not take it as you approving anything. A stopped session is resumed
+with `claude --bg --resume <session id>` from its own directory, under the same id. Claude Code's own scheduled prompts
+live inside one session and die with it; these do not.
+
+**Failures stay visible.** A job's file in `~/.local/state/later/` is removed only when the job succeeds. `later list`
+marks one that is due and not done, and `homelab later status` fails while any is more than five minutes past its time.
+
+**Pitfalls found building it.** `claude --allowedTools` takes a list and swallows a prompt placed after it, so the relay
+prompt goes on stdin. `claude --bg` refuses a directory that has not been trusted. The timer's environment lacks
+`~/.local/bin`, so the queuing shell's `PATH` is passed in.
