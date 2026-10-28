@@ -21,6 +21,7 @@ all of it:
 | `nextboot` | queues the current OS as the next EFI boot (`bin/setup-nextboot.sh`) | `homelab nextboot install` |
 | `backup` | a restic snapshot of `/srv/data` and the secrets to rebuild, every night at 17:30, onto the archive disk ([Backups](#backups)) | `homelab backup install` |
 | `statusline` | the Claude Code status line ([claude-code/README.md](claude-code/README.md)) | `homelab statusline install` |
+| `claude-later` | queues a message for a Claude session at a set time, delivered by a user timer even if the session has stopped ([claude-code/README.md](claude-code/README.md#claude-later)) | `homelab claude-later install` |
 
 `homelab status` checks more than "is it active": for each unit it checks that the file the unit runs **exists and is
 this checkout's**. After the move to `/srv/sources`, `mdns-unicast-bridge.service` still ran
