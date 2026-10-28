@@ -1,6 +1,6 @@
-# Left out of the nightly backup (restic --exclude-file): data the code recomputes from what IS backed up.
-# Measured 2026-10-28: 12 GB, of which 8 GB was rewritten in 30 days. Under "monthly for ever" retention every
-# rebuild would be kept permanently, ~100 GB a year of copies of something reproducible from the pinned bars.
+# Left out of the nightly backup (restic --exclude-file): only what code derives from the data that IS backed up, and
+# can rebuild offline from it. Measured 2026-10-28: 12 GB, 8 GB of it rewritten in 30 days, which "monthly for ever"
+# retention would otherwise keep permanently (~100 GB a year). Market data is never listed here, fetchable or not.
 
 # The research memo table: pure functions of fingerprinted inputs (backtesting/datastore.py)
 /srv/data/algo/memo
@@ -9,3 +9,6 @@
 /srv/data/algo/p2cube_fwd
 # The spread table cache (backtesting/spread.py)
 /srv/data/algo/_cache
+
+# OpenAlgo's live state: backed up as the staged copy instead (include.txt), never read while it is being written
+/srv/data/openalgo
