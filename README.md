@@ -44,14 +44,16 @@ here.
 ## Backups
 
 **The archive disk.** The 500 GB HDD is mounted at `/srv/archive`, by UUID in `/etc/fstab` with `nofail`, so a dead
-or unplugged disk cannot stop a boot. It holds two things: `restic/`, the backup repository, and `history/`, the
-1-minute history backfill (cold, write-once, and fetchable again, so it is not itself backed up). With the disk
+or unplugged disk cannot stop a boot. It holds the backup: `restic/`, the repository, and `stage/`, the consistent copy of
+OpenAlgo's state each run makes. No data lives only here: the data stays on the SSD under `/srv/data`, so with the
+backup it is on two disks. With the disk
 missing, `/srv/archive` is an empty directory on `/srv`. The backup refuses to run then, rather than write the backup
 onto the SSD it protects.
 
-**What, when.** The sources of truth under `/srv/data`, plus the secrets needed to rebuild the machine:
-[`backup/include.txt`](backup/include.txt) minus [`backup/exclude.txt`](backup/exclude.txt), which restic reads as they
-are. Left out is what code derives (the research memo table and bar cubes): 12 GB, 8 GB of it rewritten each month,
+**What, when.** All the data under `/srv/data`, fetchable again or not, so the machine can be worked on without a
+data subscription, plus the secrets needed to rebuild it: [`backup/include.txt`](backup/include.txt) minus
+[`backup/exclude.txt`](backup/exclude.txt), which restic reads as they are. Left out is only what code derives from
+that data and can rebuild offline (the research memo table and bar cubes): 12 GB, 8 GB of it rewritten each month,
 which "monthly for ever" would otherwise keep permanently. It runs every night at 17:30, after the close
 and the evening collectors, as the user timer `homelab-backup.timer`. Each night:
 1. it stages OpenAlgo's state (SQLite through its online-backup API, since a copy of a live database file can tear);

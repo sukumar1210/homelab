@@ -1,19 +1,15 @@
-# What the nightly backup holds: restic reads this file as it is (--files-from). One path per line.
-# The rule: everything under /srv/data, plus the secrets needed to rebuild the machine.
+# What the nightly backup holds: restic reads this file as it is (--files-from), minus exclude.txt. One path per line.
+# The rule: ALL the data, even what could be fetched again, so the machine can be worked on without a data
+# subscription. Only what code derives from it is left out (exclude.txt).
+
+# Everything under /srv/data: the recorder's ticks and depth, the 1-minute history, the pinned bar store, order books,
+# derivatives, 5s bars, the public NSE files, the deploy pipeline's OpenAlgo backups, the power log. A new data
+# directory is backed up without editing this file.
+/srv/data
 
 # OpenAlgo's state (databases, paper audit logs, strategies, keys, .env) as the consistent copy backup.py stages.
-# Restore OpenAlgo from HERE, not from /srv/data/openalgo, whose live databases are never read directly.
+# Restore OpenAlgo from HERE: /srv/data/openalgo itself is excluded, because its live databases are never read directly.
 /srv/archive/stage/openalgo
-
-# The recorder's ticks and 5-level depth, with its git history (the weekly branches)
-/srv/data/market
-
-# Research data: the pinned bar store, order books, derivatives, 5s bars (exclude.txt drops what code derives)
-/srv/data/algo
-
-# The deploy pipeline's pre-deploy OpenAlgo backups, and the power log
-/srv/data/backups
-/srv/data/power
 
 # Secrets and deploy state needed to rebuild: production's .env, OpenAlgo's ops env, the deploy queue's state,
 # the recorder's Fyers credentials
