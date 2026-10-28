@@ -5,13 +5,19 @@
 #   homelab status                  each component, and the node checks; exit 1 if anything is wrong
 #   homelab node check              the machine prep, read-only
 #   homelab node setup              fix what `node check` finds (sudo where it must)
-#   homelab <component> install     install or reinstall one component (re-runnable)
-#   homelab <component> remove      remove it (its data stays)
+#   homelab <component> install     install it, or reinstall it: re-runnable (`reinstall` is the same)
+#   homelab <component> uninstall   remove it; its data stays (`remove` is the same)
+#   homelab <component> update      pull this checkout, then reinstall it
+#   homelab update                  pull this checkout, then reinstall every installed component
+#   homelab reinstall               reinstall every installed component from this checkout as it is
 #   homelab backup now              run the nightly backup now and show its log
 #   homelab backup restic <args>    any restic command on the archive repository: snapshots, ls, diff, restore
 #   homelab help
 #
 # Components: power-logger, mdns-bridge, nextboot, statusline, later, backup.
+#
+# Updating reinstalls because a pull alone changes nothing that is running: the services keep the code they started
+# with until restarted, and statusline and later are copies. Each install rewrites its unit and restarts it.
 #
 # WHAT IS HERE AND WHAT IS NOT. This repository owns the MACHINE: the /srv layout (code in /srv/sources, runtime
 # state in /srv/ops, data in /srv/data), the tools and settings the projects on it assume (docker and its group,
@@ -95,6 +101,18 @@ statusline_install() {
     echo "installed $STATUSLINE_DST and set statusLine in $f (previous copy: $f.bak-homelab)"
 }
 
+statusline_remove() {   # and the statusLine setting, unless it points at something other than ours
+    rm -f "$STATUSLINE_DST"
+    local f="$HOME/.claude/settings.json"
+    if [ -f "$f" ] && [ "$(jq -r '.statusLine.command // empty' "$f")" = "~/.claude/statusline.sh" ]; then
+        cp -p "$f" "$f.bak-homelab"
+        jq 'del(.statusLine)' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+        echo "removed $STATUSLINE_DST and statusLine from $f (previous copy: $f.bak-homelab)"
+    else
+        echo "removed $STATUSLINE_DST"
+    fi
+}
+
 # later (bin/later): runs a command, or sends a message to a Claude session, at a set time; one transient user timer
 # per job (linger and jq come from `node setup`). Installed as a copy, not a link: each queued timer runs the installed
 # path. A job that fails leaves its file behind, so status counts the ones past their time: a queue that quietly stopped
@@ -153,7 +171,8 @@ OnCalendar=*-*-* 17:30
 [Install]
 WantedBy=timers.target
 EOF
-    systemctl --user daemon-reload && systemctl --user enable --now "$BACKUP_UNIT.timer" \
+    systemctl --user daemon-reload && systemctl --user enable -q "$BACKUP_UNIT.timer" \
+        && systemctl --user restart "$BACKUP_UNIT.timer" \
         && echo "installed $BACKUP_UNIT: repository $BACKUP_REPO, next run $(systemctl --user show "$BACKUP_UNIT.timer" -p NextElapseUSecRealtime --value)"
 }
 
@@ -179,7 +198,7 @@ backup_status() {
 }
 
 backup_cmd() {   # action [args]
-    case "${1:-status}" in
+    case "$(verb "${1:-status}")" in
         install) backup_install ;;
         remove)  systemctl --user disable --now "$BACKUP_UNIT.timer" 2>/dev/null
                  rm -f "$BACKUP_UNITS/$BACKUP_UNIT.service" "$BACKUP_UNITS/$BACKUP_UNIT.timer"
@@ -192,12 +211,13 @@ backup_cmd() {   # action [args]
                  journalctl --user -u "$BACKUP_UNIT" --since "$since" --no-pager -o cat | tail -25
                  return $rc ;;
         restic)  shift; restic_ "$@" ;;
-        *) echo "usage: homelab backup install|remove|status|now|restic <args>" >&2; exit 2 ;;
+        *) echo "usage: homelab backup install|uninstall|update|status|now|restic <args>" >&2; exit 2 ;;
     esac
 }
 
 component() {   # name action
-    local name="$1" action="${2:-}"
+    local name="$1" action
+    action="$(verb "${2:-}")"
     if [ "$name" = backup ]; then
         backup_cmd "$action"; return
     fi
@@ -208,16 +228,16 @@ component() {   # name action
             remove)  rm -f "$LATER_DST"
                      echo "removed $LATER_DST (jobs still queued in $LATER_QUEUE will fail without it)" ;;
             status|"") later_status ;;
-            *) echo "usage: homelab later install|remove|status" >&2; exit 2 ;;
+            *) echo "usage: homelab later install|uninstall|update|status" >&2; exit 2 ;;
         esac
         return
     fi
     if [ "$name" = statusline ]; then
         case "$action" in
             install) statusline_install ;;
-            remove)  rm -f "$STATUSLINE_DST"; echo "removed $STATUSLINE_DST (settings.json left as is)" ;;
+            remove)  statusline_remove ;;
             status|"") statusline_status ;;
-            *) echo "usage: homelab statusline install|remove|status" >&2; exit 2 ;;
+            *) echo "usage: homelab statusline install|uninstall|update|status" >&2; exit 2 ;;
         esac
         return
     fi
@@ -231,8 +251,43 @@ component() {   # name action
                            && sudo systemctl daemon-reload && echo "removed $unit"
                    else "$HERE/$ctl" remove; fi ;;
         status|"") unit_status "$name" ;;
-        *) echo "usage: homelab $name install|remove|status" >&2; exit 2 ;;
+        *) echo "usage: homelab $name install|uninstall|update|status" >&2; exit 2 ;;
     esac
+}
+
+verb() {   # the words a person reaches for, onto the two each component implements
+    case "$1" in reinstall) echo install ;; uninstall) echo remove ;; *) echo "$1" ;; esac
+}
+
+known() { printf '%s\n' "${ORDER[@]}" | grep -qx -- "$1"; }
+
+installed() {   # name: is it on this machine (what `homelab update` reinstalls)
+    case "$1" in
+        statusline) [ -f "$STATUSLINE_DST" ] ;;
+        later)      [ -f "$LATER_DST" ] ;;
+        backup)     systemctl --user cat "$BACKUP_UNIT.timer" >/dev/null 2>&1 ;;
+        *)          systemctl cat "${COMPONENT[$1]%%|*}" >/dev/null 2>&1 ;;
+    esac
+}
+
+pull_self() {   # fast-forward this checkout to its upstream; never merge
+    local before
+    before="$(git -C "$HERE" rev-parse --short HEAD)"
+    git -C "$HERE" pull --ff-only --quiet || {
+        echo "could not fast-forward $HERE (local commits, or changes in the way): sort that out, then rerun" >&2
+        return 1; }
+    echo "$HERE: $before -> $(git -C "$HERE" rev-parse --short HEAD)"
+}
+
+# ponytail: reinstalls everything installed, changed or not (a few seconds' restart each); diff the units first if
+# those restarts ever matter.
+reinstall_all() {
+    local c rc=0
+    for c in "${ORDER[@]}"; do
+        if installed "$c"; then echo "== $c"; component "$c" install || rc=1
+        else echo "== $c: not installed, skipped (homelab $c install)"; fi
+    done
+    return $rc
 }
 
 # ------------------------------------------------------------------------------------------------ the node
@@ -277,7 +332,12 @@ node() {   # check|setup
 }
 
 # ------------------------------------------------------------------------------------------------ main
-usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+if [ "${2:-}" = update ] && known "$1"; then   # pull, then let the pulled script install it
+    pull_self && exec "$HERE/homelab" "$1" install
+    exit 1
+fi
 
 case "${1:-status}" in
     status)
@@ -287,6 +347,8 @@ case "${1:-status}" in
         [ "$PROBLEMS" -eq 0 ] && echo "all good" || { echo "$PROBLEMS problem(s)"; exit 1; } ;;
     node)       node "${2:-check}"; [ "$PROBLEMS" -eq 0 ] || exit 1 ;;
     help|-h|--help) usage ;;
+    update)     pull_self && exec "$HERE/homelab" reinstall; exit 1 ;;
+    reinstall)  reinstall_all || exit 1 ;;
     backup)     shift; backup_cmd "$@" || exit $?; [ "$PROBLEMS" -eq 0 ] || exit 1 ;;
     *)          component "$1" "${2:-status}"; [ "$PROBLEMS" -eq 0 ] || exit 1 ;;
 esac
