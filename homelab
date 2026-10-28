@@ -11,7 +11,7 @@
 #   homelab backup restic <args>    any restic command on the archive repository: snapshots, ls, diff, restore
 #   homelab help
 #
-# Components: power-logger, mdns-bridge, nextboot, statusline, claude-later, backup.
+# Components: power-logger, mdns-bridge, nextboot, statusline, later, backup.
 #
 # WHAT IS HERE AND WHAT IS NOT. This repository owns the MACHINE: the /srv layout (code in /srv/sources, runtime
 # state in /srv/ops, data in /srv/data), the tools and settings the projects on it assume (docker and its group,
@@ -39,7 +39,7 @@ declare -A COMPONENT=(
     [mdns-bridge]="mdns-unicast-bridge.service|bin/service-scripts/mdns-unicast-bridge.py|bin/mdns-bridge-ctl.sh"
     [nextboot]="nextboot.service|-|bin/setup-nextboot.sh"
 )
-ORDER=(power-logger mdns-bridge nextboot statusline claude-later backup)
+ORDER=(power-logger mdns-bridge nextboot statusline later backup)
 
 unit_status() {   # name
     local unit script ctl
@@ -95,26 +95,26 @@ statusline_install() {
     echo "installed $STATUSLINE_DST and set statusLine in $f (previous copy: $f.bak-homelab)"
 }
 
-# claude-later (claude-code/claude-later): queues a message for a Claude session at a set time, one transient user
-# timer per message (linger and jq come from `node setup`). Installed as a copy, not a link: each queued timer runs the
-# installed path. A delivery that fails leaves its message file behind, so status counts the ones past their time: a
-# queue that quietly stopped delivering is the failure to see.
-LATER_SRC="claude-code/claude-later"
-LATER_DST="$HOME/.local/bin/claude-later"
-LATER_QUEUE="$HOME/.claude/later"
+# later (bin/later): runs a command, or sends a message to a Claude session, at a set time; one transient user timer
+# per job (linger and jq come from `node setup`). Installed as a copy, not a link: each queued timer runs the installed
+# path. A job that fails leaves its file behind, so status counts the ones past their time: a queue that quietly stopped
+# working is the failure to see.
+LATER_SRC="bin/later"
+LATER_DST="$HOME/.local/bin/later"
+LATER_QUEUE="${XDG_STATE_HOME:-$HOME/.local/state}/later"
 
 later_status() {
-    [ -f "$LATER_DST" ] || { bad "claude-later: $LATER_DST missing (homelab claude-later install)"; return; }
+    [ -f "$LATER_DST" ] || { bad "later: $LATER_DST missing (homelab later install)"; return; }
     cmp -s "$LATER_DST" "$HERE/$LATER_SRC" \
-        || warn "claude-later: $LATER_DST differs from $LATER_SRC (homelab claude-later install to update)"
+        || warn "later: $LATER_DST differs from $LATER_SRC (homelab later install to update)"
     local f queued=0 overdue=0
-    for f in "$LATER_QUEUE"/*.msg; do
+    for f in "$LATER_QUEUE"/*.job; do
         [ -e "$f" ] || continue
         if [ $(( $(date +%s) - $(date -d "$(sed -n 2p "$f")" +%s) )) -gt 300 ]; then overdue=$((overdue + 1))
         else queued=$((queued + 1)); fi
     done
-    [ "$overdue" -eq 0 ] && ok "claude-later: installed, $queued queued" \
-        || bad "claude-later: $overdue message(s) past their time, undelivered (claude-later list; journalctl --user -u 'claude-later-*')"
+    [ "$overdue" -eq 0 ] && ok "later: installed, $queued queued" \
+        || bad "later: $overdue job(s) past their time and not done (later list; journalctl --user -u 'later-*')"
 }
 
 # The nightly backup (backup/backup.py): a user timer, so it runs as you and reads what you own. Judged by the age of
@@ -201,14 +201,14 @@ component() {   # name action
     if [ "$name" = backup ]; then
         backup_cmd "$action"; return
     fi
-    if [ "$name" = claude-later ]; then
+    if [ "$name" = later ]; then
         case "$action" in
             install) mkdir -p "$(dirname "$LATER_DST")" && install -m 755 "$HERE/$LATER_SRC" "$LATER_DST" \
                          && echo "installed $LATER_DST" ;;
             remove)  rm -f "$LATER_DST"
-                     echo "removed $LATER_DST (messages still queued in $LATER_QUEUE will fail to deliver without it)" ;;
+                     echo "removed $LATER_DST (jobs still queued in $LATER_QUEUE will fail without it)" ;;
             status|"") later_status ;;
-            *) echo "usage: homelab claude-later install|remove|status" >&2; exit 2 ;;
+            *) echo "usage: homelab later install|remove|status" >&2; exit 2 ;;
         esac
         return
     fi

@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# later: run something at a set time. A one-shot job queue on systemd user timers.
+#
+#   later <when> run <command...>                 run a command or script, from the current directory
+#   later <when> claude <session> <message...>    send a message to a Claude Code session
+#   later list
+#   later cancel <id>
+#
+# <when> is anything `date -d` reads: "15:00", "tomorrow 09:20", "now + 2 hours". After `run`, one argument is a shell
+# command line (pipes, &&, redirects); several are a command and its arguments, kept exactly as given. A run job gets
+# your PATH and the directory you queued it from, not the rest of your shell's environment.
+#
+# Each job is a transient user timer, later-<id> (linger keeps them firing after logout), plus a file in the queue
+# directory that is removed only when the job succeeds, so a failed job stays listed. Output and exit status:
+# journalctl --user -u later-<id>
+#
+# A claude job reaches a running session (idle or busy) through SendMessage, relayed by a throwaway headless Claude:
+# the only way into a live session from outside it. A stopped session is resumed in the background with the message.
+set -euo pipefail
+q="${XDG_STATE_HOME:-$HOME/.local/state}/later"
+mkdir -p "$q"
+
+to_claude() {   # session text
+  local s out
+  s=$(claude agents --json --all | jq -c --arg t "$1" \
+    'first(.[] | select(.name == $t or .id == $t or .sessionId == $t)) // empty')
+  if [ -n "$s" ] && [[ $(jq -r .status <<<"$s") =~ ^(idle|busy)$ ]]; then
+    out=$(printf 'Use the SendMessage tool to send the text between the markers, verbatim, to the Claude session named %s. Load SendMessage with ToolSearch first. Do nothing else, then reply SENT or FAILED with the reason.\n<<<\n%s\n>>>\n' \
+      "$(jq -r .name <<<"$s")" "$2" |
+      claude -p --model haiku --no-session-persistence --allowedTools ToolSearch SendMessage ListAgents)
+    echo "$out"
+    grep -qxE 'SENT\.?' <<<"$out"
+  elif [ -n "$s" ]; then
+    cd "$(jq -r .cwd <<<"$s")"
+    claude --bg --resume "$(jq -r .sessionId <<<"$s")" "$2"
+  else
+    claude --bg --resume "$1" "$2"
+  fi
+}
+
+run_job() {   # id: what the timer runs
+  local f="$q/$1.job" kind at cwd arg body
+  { read -r kind; read -r at; read -r cwd; read -r arg; body=$(cat); } <"$f"
+  case "$kind" in
+    run)    cd "$cwd"; bash -c "$body" ;;
+    claude) cd ~; to_claude "$arg" "Queued message from the user (later, $at): $body" ;;
+  esac
+  rm "$f" # only reached on success (set -e), so a failed job stays queued
+}
+
+case "${1:-}" in
+  list)
+    for f in "$q"/*.job; do
+      [ -e "$f" ] || continue
+      { read -r kind; read -r at; read -r cwd; read -r arg; body=$(cat); } <"$f"
+      id=$(basename "$f" .job) due=""
+      [ "$(date -d "$at" +%s)" -le "$(date +%s)" ] && due="  [due, not done: journalctl --user -u later-$id]"
+      printf '%s  %s  %s %s: %s%s\n' "$id" "$at" "$kind" "${arg:-in $cwd}" "$body" "$due"
+    done
+    exit ;;
+  cancel)
+    systemctl --user stop "later-$2.timer" 2>/dev/null || true
+    rm -f "$q/$2.job"
+    exit ;;
+  _run) run_job "$2"; exit ;;
+esac
+
+[ $# -ge 3 ] || { sed -n '4,7s/^#   //p' "$0"; exit 2; }
+when=$1 kind=$2
+shift 2
+case "$kind" in
+  run)    arg=""
+          if [ $# -eq 1 ]; then body=$1; else body=$(printf '%q ' "$@"); fi ;;
+  claude) [ $# -ge 2 ] || { echo "later: a claude job needs a session and a message" >&2; exit 2; }
+          arg=$1; shift; body=$* ;;
+  *)      echo "later: unknown job kind '$kind' (run or claude)" >&2; exit 2 ;;
+esac
+at=$(date -d "$when" '+%F %T')
+[ "$(date -d "$at" +%s)" -gt "$(date +%s)" ] || { echo "later: $at has already passed" >&2; exit 1; }
+id=$(date +%s%3N)
+printf '%s\n%s\n%s\n%s\n%s\n' "$kind" "$at" "$PWD" "$arg" "$body" >"$q/$id.job"
+systemd-run --user --quiet --unit "later-$id" --on-calendar "$at" --timer-property=AccuracySec=1s \
+  -E PATH="$PATH" "$(realpath "$0")" _run "$id"
+echo "queued $id: $at, $kind ${arg:-in $PWD}"
