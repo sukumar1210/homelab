@@ -1,0 +1,24 @@
+# What the nightly backup holds: restic reads this file as it is (--files-from). One path per line.
+# The rule: everything under /srv/data, plus the secrets needed to rebuild the machine.
+
+# OpenAlgo's state (databases, paper audit logs, strategies, keys, .env) as the consistent copy backup.py stages.
+# Restore OpenAlgo from HERE, not from /srv/data/openalgo, whose live databases are never read directly.
+/srv/archive/stage/openalgo
+
+# The recorder's ticks and 5-level depth, with its git history (the weekly branches)
+/srv/data/market
+
+# Research data: the pinned bar store, order books, derivatives, 5s bars, and the memo table and cubes
+# (recomputable, but hours of compute; restic skips unchanged files, so they cost one copy)
+/srv/data/algo
+
+# The deploy pipeline's pre-deploy OpenAlgo backups, and the power log
+/srv/data/backups
+/srv/data/power
+
+# Secrets and deploy state needed to rebuild: production's .env, OpenAlgo's ops env, the deploy queue's state,
+# the recorder's Fyers credentials
+/srv/sources/algo-trading-prod/.env
+/srv/ops/secrets
+/srv/ops/deploy
+/home/sukumar/.config/market-recorder
