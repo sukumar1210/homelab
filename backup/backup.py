@@ -3,10 +3,10 @@
 
     python3 backup/backup.py     # what homelab-backup.timer runs at 17:30: stage, back up, prune, verify
 
-WHAT is backed up is include.txt minus exclude.txt, beside this file, which restic reads as they are. The rule: the
-sources of truth under /srv/data plus the secrets needed to rebuild the machine. Not what code derives from them (the
-research memo table and cubes, which churn by gigabytes a month), not /srv/archive/history, which already lives on this
-disk and can be fetched again, and not the code checkouts, which live on GitHub.
+WHAT is backed up is include.txt minus exclude.txt, beside this file, which restic reads as they are. The rule: ALL
+the data under /srv/data, fetchable again or not, so the machine can be worked on without a data subscription, plus
+the secrets needed to rebuild it. Left out is only what code derives from that data and can rebuild offline (the
+research memo table and cubes, which churn by gigabytes a month), and the code checkouts, which live on GitHub.
 
 **restic, one snapshot a night.** A snapshot is the whole set as it was that evening, stored deduplicated, so a night
 costs only what changed. Kept: the last 14 nightly snapshots, 8 weekly and one per month for ever, grouped by tag so an
