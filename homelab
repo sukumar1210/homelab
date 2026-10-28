@@ -31,6 +31,8 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 SRV="${SRV:-/srv}"
+DISK_WARN_GB="${DISK_WARN_GB:-30}"     # free-space thresholds for `node check` (overridable, which is how they are tested)
+DISK_FAIL_GB="${DISK_FAIL_GB:-10}"
 PROBLEMS=0
 
 ok()   { printf '  \033[32mok\033[0m    %s\n' "$*"; }
@@ -320,6 +322,23 @@ node() {   # check|setup
     if [ "$mode" = setup ] && [ ${#missing[@]} -gt 0 ]; then
         sudo apt-get install -y "${missing[@]}" && ok "installed ${missing[*]}" || bad "apt could not install ${missing[*]}"
     fi
+
+    # Every byte of data sits on /srv AND on the archive disk (the backup), so whichever fills first stops the other
+    # being useful. Measured 2026-10-28: the data grows ~0.9 GB a trading day (the recorder's 2,000 symbols, 5s bars,
+    # derivatives, order books), so 30 GB is about six weeks of warning. Run from `status` every time, read-only.
+    echo "== disk space: the data lives on $SRV, and again on /srv/archive (the backup)"
+    local m free
+    for m in / "$SRV" /srv/archive; do
+        if [ "$m" = /srv/archive ] && ! mountpoint -q "$m"; then
+            continue                                  # a missing archive disk is the backup's to report
+        fi
+        free="$(df -BG --output=avail "$m" | tail -1 | tr -dc 0-9)"
+        local left=""
+        [ "$m" = "$SRV" ] && left=", ~$((free * 10 / 9)) trading days at ~0.9 GB/day"
+        if [ "$free" -lt "$DISK_FAIL_GB" ]; then bad "$m: ${free} GB free$left (under $DISK_FAIL_GB GB: free space now)"
+        elif [ "$free" -lt "$DISK_WARN_GB" ]; then warn "$m: ${free} GB free$left (under $DISK_WARN_GB GB: plan more space)"
+        else ok "$m: ${free} GB free$left"; fi
+    done
 
     echo "== docker for $USER, and user services that survive logout"
     if id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then ok "$USER is in the docker group"
