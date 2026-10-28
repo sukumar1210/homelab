@@ -1,4 +1,6 @@
-# Claude Code status line (node-01)
+# Claude Code on node-01
+
+Two things: the status line (below) and [`claude-later`](#claude-later).
 
 `node-01.statusline.sh` is the Claude Code status line for node-01
 (HP Pavilion g6, Debian 13). It renders:
@@ -90,3 +92,43 @@ These are node-01 only and need rechecking on other hardware:
   have a different register; see the docstring in
   `bin/service-scripts/power-logger.py`.
 - **CPU temperature** uses the `x86_pkg_temp` thermal zone (Intel).
+
+## claude-later
+
+`claude-later` queues a message for a specific Claude session and delivers it
+at a set time, like a delayed queue with one consumer per session. Claude
+Code's own scheduled prompts live inside one session and die with it; these
+are systemd user timers, so they fire after logout and after the session has
+stopped.
+
+```
+homelab claude-later install           # copies it to ~/.local/bin/claude-later
+claude-later 15:00 research-1 "check JPL depth and report"
+claude-later "tomorrow 09:20" openalgo-fork-1 "run the gthread suite"
+claude-later list                      # id, time, session, message
+claude-later cancel <id>
+journalctl --user -u 'claude-later-*'  # every delivery
+```
+
+`<when>` is anything `date -d` reads; a time already past is refused. The
+session is the name `claude agents` shows, or its id.
+
+**Delivery.** At the time, the timer runs `claude-later deliver <id>`, which
+looks the session up in `claude agents --json --all`:
+
+- **Running** (idle or busy): a throwaway `claude -p --model haiku` relays the
+  message with SendMessage, the only way into a live session from outside it.
+  The session sees a message from another session, prefixed `Queued message
+  from the user (claude-later, <time>)`, and acts on it within its own
+  permissions; it does not treat it as the user approving anything.
+- **Stopped**: `claude --bg --resume <session id>` from the session's own
+  directory continues it under the same id with the message as the next turn.
+
+A failed delivery keeps its file in `~/.claude/later/`, so nothing is lost
+silently; `homelab claude-later status` fails while any message is more than
+five minutes past its time.
+
+**Pitfalls found building it.** `claude --allowedTools` takes a list and
+swallows a prompt placed after it, so the relay prompt goes on stdin.
+`claude --bg` refuses a directory that has not been trusted. The timer's
+environment lacks `~/.local/bin`, so the queuing shell's `PATH` is passed in.
