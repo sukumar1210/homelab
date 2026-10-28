@@ -16,6 +16,7 @@ all of it:
 | **Layout** | `/srv/sources` (code checkouts), `/srv/ops` (runtime state), `/srv/data` (data), each owned by you, linked as `~/sources`, `~/ops`, `~/data` | `homelab node check` / `setup` |
 | **Tools** | git, make, python3, curl, jq, gawk, docker, git-lfs, restic | `homelab node setup` installs what is missing (apt) |
 | **Settings** | you in the `docker` group; linger, so user services run while logged out and after a reboot | `homelab node setup` |
+| **Disk space** | free space on `/`, `/srv` (with trading days left at the measured ~0.9 GB/day) and `/srv/archive`: warn under 30 GB (~six weeks), FAIL under 10 GB. The data sits on both `/srv` and the archive disk, so whichever fills first matters | `homelab node check` (part of `homelab status`) |
 | `power-logger` | whole-system power and energy log, `/srv/data/power/` (`bin/power-logger-ctl.sh`) | `homelab power-logger install` |
 | `mdns-bridge` | answers mDNS queries by unicast, for routers that do not forward multicast wired-to-Wi-Fi (`bin/mdns-bridge-ctl.sh`) | `homelab mdns-bridge install` |
 | `nextboot` | queues the current OS as the next EFI boot (`bin/setup-nextboot.sh`) | `homelab nextboot install` |
