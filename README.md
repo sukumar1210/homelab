@@ -6,7 +6,8 @@ all of it:
 ```
 ~/sources/homelab/homelab              # status of everything; exit 1 if anything is wrong
 ~/sources/homelab/homelab node setup   # make the machine ready (the /srv layout, tools, docker group, linger)
-~/sources/homelab/homelab <component> install|remove|status
+~/sources/homelab/homelab update       # pull this checkout, then reinstall everything installed
+~/sources/homelab/homelab <component> install|uninstall|update|status
 ```
 
 ## What this repository owns
@@ -28,6 +29,15 @@ this checkout's**. After the move to `/srv/sources`, `mdns-unicast-bridge.servic
 `/home/sukumar/bin/service-scripts/mdns-unicast-bridge.py`, which no longer existed, and restarted every few seconds
 with nothing reporting it. `homelab <component> install` rewrites the unit from the current checkout. The old
 per-component scripts still work on their own; with no argument they show their menu.
+
+**Install, uninstall, update.** `install` is re-runnable, so it is also the reinstall (`reinstall` is accepted).
+`uninstall` (or `remove`) takes the component off the machine and leaves its data. `update` fast-forwards this checkout
+from GitHub, then the pulled `homelab` reinstalls: one component with `homelab <component> update`, or every installed
+one with `homelab update`, skipping what is not installed. It reinstalls because a pull alone changes nothing that is
+running: the services keep the code they started with until restarted, and `statusline` and `later` are copies. It
+never merges: a checkout with local commits is refused. `homelab reinstall` does the reinstall without the pull. The
+system services need sudo, so run it yourself. `./test_homelab.sh` checks all of this against stand-ins for sudo and
+systemctl, changing nothing on the machine.
 
 ## Projects on this node
 
