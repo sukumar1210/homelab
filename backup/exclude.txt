@@ -1,0 +1,11 @@
+# Left out of the nightly backup (restic --exclude-file): data the code recomputes from what IS backed up.
+# Measured 2026-10-28: 12 GB, of which 8 GB was rewritten in 30 days. Under "monthly for ever" retention every
+# rebuild would be kept permanently, ~100 GB a year of copies of something reproducible from the pinned bars.
+
+# The research memo table: pure functions of fingerprinted inputs (backtesting/datastore.py)
+/srv/data/algo/memo
+# The program-2 bar cubes, built from the pinned 1m bars (backtesting/p2/data.py, forward.py)
+/srv/data/algo/p2cube
+/srv/data/algo/p2cube_fwd
+# The spread table cache (backtesting/spread.py)
+/srv/data/algo/_cache
