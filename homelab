@@ -7,9 +7,11 @@
 #   homelab node setup              fix what `node check` finds (sudo where it must)
 #   homelab <component> install     install or reinstall one component (re-runnable)
 #   homelab <component> remove      remove it (its data stays)
+#   homelab backup now              run the nightly backup now and show its log
+#   homelab backup restic <args>    any restic command on the archive repository: snapshots, ls, diff, restore
 #   homelab help
 #
-# Components: power-logger, mdns-bridge, nextboot, statusline.
+# Components: power-logger, mdns-bridge, nextboot, statusline, backup.
 #
 # WHAT IS HERE AND WHAT IS NOT. This repository owns the MACHINE: the /srv layout (code in /srv/sources, runtime
 # state in /srv/ops, data in /srv/data), the tools and settings the projects on it assume (docker and its group,
@@ -37,7 +39,7 @@ declare -A COMPONENT=(
     [mdns-bridge]="mdns-unicast-bridge.service|bin/service-scripts/mdns-unicast-bridge.py|bin/mdns-bridge-ctl.sh"
     [nextboot]="nextboot.service|-|bin/setup-nextboot.sh"
 )
-ORDER=(power-logger mdns-bridge nextboot statusline)
+ORDER=(power-logger mdns-bridge nextboot statusline backup)
 
 unit_status() {   # name
     local unit script ctl
@@ -93,8 +95,90 @@ statusline_install() {
     echo "installed $STATUSLINE_DST and set statusLine in $f (previous copy: $f.bak-homelab)"
 }
 
+# The nightly backup (backup/backup.py): a user timer, so it runs as you and reads what you own. Judged by the age of
+# its newest snapshot, not by the timer being enabled: a timer that fires every night into a failing run is the
+# silent failure a backup must not have.
+BACKUP_REPO="/srv/archive/restic"
+BACKUP_UNIT="homelab-backup"
+BACKUP_UNITS="$HOME/.config/systemd/user"
+BACKUP_MAX_AGE_H=30
+
+restic_() { restic --repo "$BACKUP_REPO" --insecure-no-password "$@"; }
+
+backup_install() {
+    command -v restic >/dev/null || { echo "restic is not installed (homelab node setup, or: sudo apt install restic)" >&2; return 1; }
+    mountpoint -q /srv/archive || { echo "/srv/archive is not mounted: the archive disk is missing (findmnt /srv/archive)" >&2; return 1; }
+    [ -f "$BACKUP_REPO/config" ] || restic_ init || return 1
+    chmod 700 "$BACKUP_REPO"
+    mkdir -p "$BACKUP_UNITS"
+    cat > "$BACKUP_UNITS/$BACKUP_UNIT.service" <<EOF
+[Unit]
+Description=homelab: nightly backup of this machine's data to /srv/archive (backup/backup.py)
+AssertPathIsMountPoint=/srv/archive
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 $HERE/backup/backup.py
+Nice=10
+EOF
+    cat > "$BACKUP_UNITS/$BACKUP_UNIT.timer" <<EOF
+[Unit]
+Description=homelab: the nightly backup at 17:30, after the close and the evening collectors
+
+[Timer]
+OnCalendar=*-*-* 17:30
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl --user daemon-reload && systemctl --user enable --now "$BACKUP_UNIT.timer" \
+        && echo "installed $BACKUP_UNIT: repository $BACKUP_REPO, next run $(systemctl --user show "$BACKUP_UNIT.timer" -p NextElapseUSecRealtime --value)"
+}
+
+backup_status() {
+    systemctl --user cat "$BACKUP_UNIT.timer" >/dev/null 2>&1 || { bad "backup: not installed (homelab backup install)"; return; }
+    mountpoint -q /srv/archive || { bad "backup: /srv/archive is not mounted, so the next run will refuse (findmnt /srv/archive)"; return; }
+    local runs result last n
+    runs="$(systemctl --user cat "$BACKUP_UNIT.service" 2>/dev/null | sed -n 's/^ExecStart=[^ ]* \([^ ]*\).*/\1/p')"
+    [ "$(realpath "$runs" 2>/dev/null)" = "$(realpath "$HERE/backup/backup.py")" ] \
+        || warn "backup: the unit runs $runs, not this checkout's backup/backup.py (homelab backup install)"
+    systemctl --user is-enabled -q "$BACKUP_UNIT.timer" || bad "backup: the timer is not enabled (homelab backup install)"
+    result="$(systemctl --user show "$BACKUP_UNIT.service" -p Result --value)"
+    [ "$result" = success ] || bad "backup: the last run ended '$result' (journalctl --user -u $BACKUP_UNIT)"
+    last="$(restic_ snapshots --no-lock --tag nightly --latest 1 --json 2>/dev/null | jq -r '.[-1].time // empty')"
+    [ -n "$last" ] || { bad "backup: no snapshot yet (homelab backup now)"; return; }
+    local age_h=$(( ($(date +%s) - $(date -d "$last" +%s)) / 3600 ))
+    n="$(restic_ snapshots --no-lock --json 2>/dev/null | jq length)"
+    if [ "$age_h" -le "$BACKUP_MAX_AGE_H" ]; then
+        ok "backup: newest snapshot ${age_h}h old ($(date -d "$last" '+%F %H:%M')), $n kept, $(du -sh "$BACKUP_REPO" | cut -f1) in $BACKUP_REPO"
+    else
+        bad "backup: newest snapshot is ${age_h}h old, more than ${BACKUP_MAX_AGE_H}h (journalctl --user -u $BACKUP_UNIT)"
+    fi
+}
+
+backup_cmd() {   # action [args]
+    case "${1:-status}" in
+        install) backup_install ;;
+        remove)  systemctl --user disable --now "$BACKUP_UNIT.timer" 2>/dev/null
+                 rm -f "$BACKUP_UNITS/$BACKUP_UNIT.service" "$BACKUP_UNITS/$BACKUP_UNIT.timer"
+                 systemctl --user daemon-reload; echo "removed $BACKUP_UNIT (the snapshots in $BACKUP_REPO stay)" ;;
+        status)  backup_status ;;
+        now)     local since rc
+                 since="$(date '+%F %T')"
+                 echo "running the backup (journalctl --user -u $BACKUP_UNIT -f to follow it)"
+                 systemctl --user start "$BACKUP_UNIT.service"; rc=$?
+                 journalctl --user -u "$BACKUP_UNIT" --since "$since" --no-pager -o cat | tail -25
+                 return $rc ;;
+        restic)  shift; restic_ "$@" ;;
+        *) echo "usage: homelab backup install|remove|status|now|restic <args>" >&2; exit 2 ;;
+    esac
+}
+
 component() {   # name action
     local name="$1" action="${2:-}"
+    if [ "$name" = backup ]; then
+        backup_cmd "$action"; return
+    fi
     if [ "$name" = statusline ]; then
         case "$action" in
             install) statusline_install ;;
@@ -121,7 +205,7 @@ component() {   # name action
 # ------------------------------------------------------------------------------------------------ the node
 #: command -> the Debian package that provides it
 declare -A PACKAGE=([git]=git [make]=make [python3]=python3 [curl]=curl [jq]=jq [gawk]=gawk [docker]=docker.io
-                    [git-lfs]=git-lfs)
+                    [git-lfs]=git-lfs [restic]=restic)
 
 node() {   # check|setup
     local mode="${1:-check}" missing=() d
@@ -139,7 +223,7 @@ node() {   # check|setup
     done
 
     echo "== tools the projects here assume"
-    for c in git make python3 curl jq gawk docker git-lfs; do
+    for c in git make python3 curl jq gawk docker git-lfs restic; do
         if [ "$c" = git-lfs ]; then git lfs version >/dev/null 2>&1 && ok "git-lfs" && continue
         else command -v "$c" >/dev/null && ok "$c" && continue; fi
         missing+=("${PACKAGE[$c]}")
@@ -160,7 +244,7 @@ node() {   # check|setup
 }
 
 # ------------------------------------------------------------------------------------------------ main
-usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-status}" in
     status)
@@ -170,5 +254,6 @@ case "${1:-status}" in
         [ "$PROBLEMS" -eq 0 ] && echo "all good" || { echo "$PROBLEMS problem(s)"; exit 1; } ;;
     node)       node "${2:-check}"; [ "$PROBLEMS" -eq 0 ] || exit 1 ;;
     help|-h|--help) usage ;;
+    backup)     shift; backup_cmd "$@" || exit $?; [ "$PROBLEMS" -eq 0 ] || exit 1 ;;
     *)          component "$1" "${2:-status}"; [ "$PROBLEMS" -eq 0 ] || exit 1 ;;
 esac
