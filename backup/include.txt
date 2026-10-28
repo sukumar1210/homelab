@@ -8,8 +8,7 @@
 # The recorder's ticks and 5-level depth, with its git history (the weekly branches)
 /srv/data/market
 
-# Research data: the pinned bar store, order books, derivatives, 5s bars, and the memo table and cubes
-# (recomputable, but hours of compute; restic skips unchanged files, so they cost one copy)
+# Research data: the pinned bar store, order books, derivatives, 5s bars (exclude.txt drops what code derives)
 /srv/data/algo
 
 # The deploy pipeline's pre-deploy OpenAlgo backups, and the power log

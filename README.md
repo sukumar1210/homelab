@@ -49,8 +49,10 @@ or unplugged disk cannot stop a boot. It holds two things: `restic/`, the backup
 missing, `/srv/archive` is an empty directory on `/srv`. The backup refuses to run then, rather than write the backup
 onto the SSD it protects.
 
-**What, when.** Everything under `/srv/data`, plus the secrets needed to rebuild the machine, listed in
-[`backup/include.txt`](backup/include.txt), which restic reads as it is. It runs every night at 17:30, after the close
+**What, when.** The sources of truth under `/srv/data`, plus the secrets needed to rebuild the machine:
+[`backup/include.txt`](backup/include.txt) minus [`backup/exclude.txt`](backup/exclude.txt), which restic reads as they
+are. Left out is what code derives (the research memo table and bar cubes): 12 GB, 8 GB of it rewritten each month,
+which "monthly for ever" would otherwise keep permanently. It runs every night at 17:30, after the close
 and the evening collectors, as the user timer `homelab-backup.timer`. Each night:
 1. it stages OpenAlgo's state (SQLite through its online-backup API, since a copy of a live database file can tear);
 2. it writes one snapshot;
