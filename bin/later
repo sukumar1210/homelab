@@ -14,27 +14,54 @@
 # directory that is removed only when the job succeeds, so a failed job stays listed. Output and exit status:
 # journalctl --user -u later-<id>
 #
-# A claude job reaches a running session (idle or busy) through SendMessage, relayed by a throwaway headless Claude:
-# the only way into a live session from outside it. A stopped session is resumed in the background with the message.
+# A claude job reaches a running session (any status: idle, busy, waiting) through SendMessage, relayed by a throwaway
+# headless Claude: the only way into a live session from outside it. A stopped session is resumed in the background
+# with the message. The relay's prose is not evidence of delivery: it has answered "SENT" for a message it shortened,
+# and failed leaving no trace. Its own record decides: the SendMessage calls it made and what they returned.
 set -euo pipefail
 q="${XDG_STATE_HOME:-$HOME/.local/state}/later"
 mkdir -p "$q"
 
+sent() {   # to text < the relay's stream-json: exact (delivered as given), altered (delivered changed) or none
+  jq -rs --arg to "$1" --arg m "$2" '
+    [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "SendMessage")]
+      as $calls
+    | [.[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result" and (.is_error | not))
+        | select((.content | if type == "array" then .[0].text else . end) | (fromjson? // {}) | .success == true)
+        | .tool_use_id] as $ok
+    | [$calls[] | select(.id as $i | $ok | index($i))] as $sent
+    | if any($sent[]; .input.to == $to and .input.message == $m) then "exact"
+      elif ($sent | length) > 0 then "altered" else "none" end' 2>/dev/null || echo none
+}
+
 to_claude() {   # session text
-  local s out
+  local s out name try
   s=$(claude agents --json --all | jq -c --arg t "$1" \
     'first(.[] | select(.name == $t or .id == $t or .sessionId == $t)) // empty')
-  if [ -n "$s" ] && [[ $(jq -r .status <<<"$s") =~ ^(idle|busy)$ ]]; then
-    out=$(printf 'Use the SendMessage tool to send the text between the markers, verbatim, to the Claude session named %s. Load SendMessage with ToolSearch first. Do nothing else, then reply SENT or FAILED with the reason.\n<<<\n%s\n>>>\n' \
-      "$(jq -r .name <<<"$s")" "$2" |
-      claude -p --model haiku --no-session-persistence --allowedTools ToolSearch SendMessage ListAgents)
-    echo "$out"
-    grep -qxE 'SENT\.?' <<<"$out"
+  if [ -n "$s" ] && [ "$(jq -r .status <<<"$s")" != null ]; then
+    name=$(jq -r .name <<<"$s")
+    for try in 1 2 3; do   # retried only while nothing has reached the session, so a retry cannot send it twice
+      out=$(printf 'Call the SendMessage tool exactly once with exactly these arguments, copying every character of each value:\n%s\nDo nothing else.\n' \
+        "$(jq -nc --arg to "$name" --arg m "$2" '{to: $to, message: $m}')" |
+        claude -p --model haiku --no-session-persistence --output-format stream-json --verbose \
+          --allowedTools ToolSearch SendMessage) || true
+      case "$(sent "$name" "$2" <<<"$out")" in
+        exact)   echo "delivered to $name"; return 0 ;;
+        altered) echo "delivered to $name, but not word for word; not retried. What it sent:"
+                 jq -r 'select(.type == "assistant") | .message.content[]?
+                   | select(.type == "tool_use" and .name == "SendMessage") | .input.message' <<<"$out"
+                 return 1 ;;
+      esac
+      echo "attempt $try: nothing delivered to $name. The relay's last output:"
+      tail -c 600 <<<"$out"; echo
+    done
+    return 1
   elif [ -n "$s" ]; then
     cd "$(jq -r .cwd <<<"$s")"
     claude --bg --resume "$(jq -r .sessionId <<<"$s")" "$2"
   else
-    claude --bg --resume "$1" "$2"
+    echo "no Claude session named or numbered '$1' (claude agents --all lists them)" >&2
+    return 1
   fi
 }
 
@@ -63,6 +90,7 @@ case "${1:-}" in
     rm -f "$q/$2.job"
     exit ;;
   _run) run_job "$2"; exit ;;
+  _sent) sent "$2" "$3"; exit ;;   # for test_later.sh
 esac
 
 [ $# -ge 3 ] || { sed -n '4,7s/^#   //p' "$0"; exit 2; }

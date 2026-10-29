@@ -116,12 +116,20 @@ journalctl --user -u later-<id>             # a job's output and exit status
 (pipes, `&&`, redirects); several are a command and its arguments, kept exactly as given. A run job gets your `PATH` and
 the directory you queued it from, not the rest of your shell's environment: a script that needs more sets it up itself.
 
-**Claude jobs.** The session is the name `claude agents` shows, or its id. A running session (idle or busy) gets the
-message through SendMessage, relayed by a throwaway `claude -p --model haiku`: the only way into a live session from
-outside it. The session sees a message from another session, prefixed `Queued message from the user (later, <time>)`,
-and acts on it within its own permissions; it does not take it as you approving anything. A stopped session is resumed
-with `claude --bg --resume <session id>` from its own directory, under the same id. Claude Code's own scheduled prompts
-live inside one session and die with it; these do not.
+**Claude jobs.** The session is the name `claude agents` shows, or its id; an unknown one fails at once, saying so. A
+running session (any status: idle, busy, waiting) gets the message through SendMessage, relayed by a throwaway
+`claude -p --model haiku`: the only way into a live session from outside it. The session sees a message from another
+session, prefixed `Queued message from the user (later, <time>)`, and acts on it within its own permissions; it does not
+take it as you approving anything. A stopped session is resumed with `claude --bg --resume <session id>` from its own
+directory, under the same id. Claude Code's own scheduled prompts live inside one session and die with it; these do not.
+
+**How delivery is judged.** Not by what the relay says: on 2026-10-29 it answered "SENT" for a message it had shortened
+to its last word, and reported "SENT. The message reached..." for one it had delivered intact, which a strict match
+counted as a failure. The relay writes its record as stream-json, and the job is done only when that record holds a
+SendMessage call carrying exactly the job's text to that session, answered with success. A call that succeeded with
+different text is logged with what was sent and not retried, so the session never gets the message twice. When nothing
+reached the session the relay is tried again, three times in all, and each failed try logs the relay's last output.
+`./test_later.sh` checks that judgement against relay records of each kind.
 
 **Failures stay visible.** A job's file in `~/.local/state/later/` is removed only when the job succeeds. `later list`
 marks one that is due and not done, and `homelab later status` fails while any is more than five minutes past its time.
