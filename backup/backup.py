@@ -48,7 +48,7 @@ OPENALGO = Path("/srv/data/openalgo")
 STAGE = ARCHIVE / "stage" / "openalgo"
 SKIP = {"tmp"}                          # OpenAlgo's tmp/: release wheels and caches, all fetchable again
 SQLITE_HEADER = b"SQLite format 3\x00"
-RESTIC = ["restic", "--repo", str(REPO), "--insecure-no-password"]
+RESTIC = ["restic", "--repo", str(REPO), "--insecure-no-password", "--retry-lock", "30m"]   # a live lock: wait
 KEEP = ["--keep-daily", "14", "--keep-weekly", "8", "--keep-monthly", "unlimited"]
 
 
@@ -129,6 +129,10 @@ def main() -> int:
         print(f"staged OpenAlgo's state: {stage(OPENALGO, STAGE)} files into {STAGE}", flush=True)
         restic("backup", "--files-from", str(HERE / "include.txt"),
                "--exclude-file", str(HERE / "exclude.txt"), "--exclude-caches", "--tag", "nightly")
+        # A restic killed mid-run (a timeout, Ctrl-C) leaves its lock, and `forget` needs the repository to itself: one
+        # left at 2026-10-28 23:10 made the next two nights write their snapshot, then fail before retention and the
+        # check. `unlock` removes only locks whose process is gone, never a running one's.
+        restic("unlock")
         restic("forget", "--tag", "nightly", "--group-by", "host,tags", *KEEP, "--prune")
         restic("check", f"--read-data-subset={date.today().isoweekday()}/7")
     except Failed as e:
