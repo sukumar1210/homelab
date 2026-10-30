@@ -1,4 +1,5 @@
 """python3 backup/test_backup.py: the two guards the backup's correctness rests on, each shown to fail."""
+import os
 import shutil
 import sqlite3
 import sys
@@ -104,6 +105,36 @@ class Nightly(unittest.TestCase):
     def test_a_locked_forget_still_fails_the_night(self):
         rc, calls = self.run_main({"forget": 11})
         self.assertEqual((rc, calls), (1, ["backup", "unlock", "forget"]))
+
+    def test_PLANTED_a_failed_night_is_alerted_on_both_channels_and_a_good_one_is_not(self):
+        sent, orig = [], backup.alert
+        backup.alert = lambda text, post=None: sent.append(text) or {}
+        try:
+            self.assertEqual(self.run_main({"forget": 11})[0], 1)
+            self.assertEqual(self.run_main({})[0], 0)
+        finally:
+            backup.alert = orig
+        self.assertEqual(len(sent), 1, "one alert for the failed night, none for the good one")
+        self.assertIn("restic forget exited 11", sent[0])
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "o.env").write_text("OPENALGO_API_KEY=k\n")
+        (tmp / "a.env").write_text("ALERT_TELEGRAM_USER=op\n")
+        posted = []
+        s0, a0 = backup.SECRETS, backup.ALERTS
+        backup.SECRETS, backup.ALERTS = tmp / "o.env", tmp / "a.env"
+        try:
+            got = backup.alert("x", post=lambda path, body: posted.append((path, body)) or "sent")
+            self.assertEqual(got, {"telegram": "sent", "whatsapp": "sent"})
+            self.assertEqual([p for p, _ in posted], ["/api/v1/telegram/notify", "/api/v1/whatsapp/notify"])
+            self.assertEqual(posted[1][1].get("self"), True, "no WhatsApp username: the chat /update-here named")
+            backup.ALERTS = tmp / "missing.env"
+            self.assertEqual(backup.alert("x", post=lambda p, b: "sent")["telegram"], "skipped: no ALERT_TELEGRAM_USER")
+            os.environ["OPENALGO_HOST"] = "http://127.0.0.1:9"              # nothing listens: a reason, not a raise
+            self.assertTrue(backup.alert("x")["whatsapp"].startswith("failed"))
+        finally:
+            backup.SECRETS, backup.ALERTS = s0, a0
+            os.environ.pop("OPENALGO_HOST", None)
+            shutil.rmtree(tmp)
 
 
 if __name__ == "__main__":
