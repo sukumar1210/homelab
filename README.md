@@ -80,6 +80,11 @@ and the evening collectors, as the user timer `homelab-backup.timer`. Each night
 (FAIL past 30 h) and the last run's result, not by the timer being enabled. A timer that fires every night into a
 failing run is the silent failure a backup must not have.
 
+**A failed run alerts** on Telegram and WhatsApp through OpenAlgo's notify API, where the node's other alerts go:
+the key from `/srv/ops/secrets/openalgo.env`, the recipients (`ALERT_TELEGRAM_USER`, `ALERT_WHATSAPP_USERNAME`) from
+`~/.config/homelab/alerts.env`. Without a WhatsApp username it goes to the chat OpenAlgo's `/update-here` named. An
+alert never raises, and the run's log prints what each channel answered.
+
 ```
 homelab backup status                        # newest snapshot, its age, how many are kept, repository size
 homelab backup now                           # run it now and print its log

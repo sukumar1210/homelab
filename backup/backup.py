@@ -33,6 +33,7 @@ mount and so does this script, for a run by hand.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -46,6 +47,8 @@ ARCHIVE = Path("/srv/archive")
 REPO = ARCHIVE / "restic"
 OPENALGO = Path("/srv/data/openalgo")
 STAGE = ARCHIVE / "stage" / "openalgo"
+SECRETS = Path("/srv/ops/secrets/openalgo.env")             # the node's OpenAlgo key
+ALERTS = Path.home() / ".config" / "homelab" / "alerts.env"  # ALERT_TELEGRAM_USER, ALERT_WHATSAPP_USERNAME
 SKIP = {"tmp"}                          # OpenAlgo's tmp/: release wheels and caches, all fetchable again
 SQLITE_HEADER = b"SQLite format 3\x00"
 RESTIC = ["restic", "--repo", str(REPO), "--insecure-no-password", "--retry-lock", "30m"]   # a live lock: wait
@@ -121,6 +124,53 @@ def restic(*args: str) -> None:
         raise Failed(f"restic {args[0]} exited {r.returncode}")
 
 
+def _env(*files: Path) -> dict:
+    out = {}
+    for f in files:
+        try:
+            for line in f.read_text().splitlines():
+                k, sep, v = line.partition("=")
+                if sep and not k.lstrip().startswith("#"):
+                    out[k.strip()] = v.strip().strip("'\"")
+        except OSError:
+            pass
+    return out
+
+
+def alert(text: str, post=None) -> dict:
+    """The failure to Telegram and WhatsApp through OpenAlgo's notify API, where the node's other alerts go. Never
+    raises: an alert that crashes would hide the failure it reports. Returns what each channel answered.
+
+    It exists because a failure here was only an exit code: `homelab backup status` said FAIL, nobody ran it, and two
+    nights (2026-10-29 and 10-30) skipped retention and the check unnoticed."""
+    import urllib.error
+    import urllib.request
+    env = {**_env(SECRETS, ALERTS), **os.environ}
+    key, host = env.get("OPENALGO_API_KEY", ""), env.get("OPENALGO_HOST", "http://127.0.0.1:5000").rstrip("/")
+
+    def send(path: str, body: dict) -> str:
+        try:
+            req = urllib.request.Request(f"{host}{path}", json.dumps(body).encode(), {"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                answer = json.loads(r.read() or b"{}")
+            return f"rejected: {answer.get('message', '')}"[:90] if str(answer.get("status")).lower() == "error" else "sent"
+        except urllib.error.HTTPError as e:        # OpenAlgo's own reason, e.g. 409 "Telegram bot is stopped"
+            try:
+                return f"rejected ({e.code}): {json.loads(e.read()).get('message', '')}"[:120]
+            except Exception:                      # noqa: BLE001
+                return f"rejected ({e.code})"
+        except Exception as e:                     # noqa: BLE001 -- OpenAlgo down is a reason, never a crash
+            return f"failed: {type(e).__name__}"
+    post = post or send
+    if not key:
+        return {"telegram": "skipped: no OPENALGO_API_KEY", "whatsapp": "skipped: no OPENALGO_API_KEY"}
+    user, wa = env.get("ALERT_TELEGRAM_USER", ""), env.get("ALERT_WHATSAPP_USERNAME", "")
+    return {"telegram": post("/api/v1/telegram/notify", {"apikey": key, "username": user, "message": text,
+                                                          "priority": 1}) if user else "skipped: no ALERT_TELEGRAM_USER",
+            "whatsapp": post("/api/v1/whatsapp/notify", {"apikey": key, "message": text,
+                                                          **({"username": wa} if wa else {"self": True})})}
+
+
 def main() -> int:
     try:
         require_mount(ARCHIVE)
@@ -137,6 +187,9 @@ def main() -> int:
         restic("check", f"--read-data-subset={date.today().isoweekday()}/7")
     except Failed as e:
         print(f"BACKUP FAILED: {e}", file=sys.stderr)
+        sent = alert(f"[homelab] ERROR {date.today()}: the nightly backup FAILED: {e}. "
+                     f"journalctl --user -u homelab-backup")
+        print(f"alert: {sent}", file=sys.stderr)
         return 1
     print("backup complete: snapshot written, retention applied, a seventh of the data read back and verified")
     return 0
