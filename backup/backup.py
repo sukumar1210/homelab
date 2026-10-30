@@ -6,7 +6,9 @@
 WHAT is backed up is include.txt minus exclude.txt, beside this file, which restic reads as they are. The rule: ALL
 the data under /srv/data, fetchable again or not, so the machine can be worked on without a data subscription, plus
 the secrets needed to rebuild it. Left out is only what code derives from that data and can rebuild offline (the
-research memo table and cubes, which churn by gigabytes a month), and the code checkouts, which live on GitHub.
+research memo table and cubes, which churn by gigabytes a month), and the code checkouts, which live on GitHub. Their
+research `results/` directories are data, not code, and are included (a bridge until research writes them under
+/srv/data/algo/results).
 
 **restic, one snapshot a night.** A snapshot is the whole set as it was that evening, stored deduplicated, so a night
 costs only what changed. Kept: the last 14 nightly snapshots, 8 weekly and one per month for ever, grouped by tag so an

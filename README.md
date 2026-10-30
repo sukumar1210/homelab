@@ -63,7 +63,8 @@ missing, `/srv/archive` is an empty directory on `/srv`. The backup refuses to r
 onto the SSD it protects.
 
 **What, when.** All the data under `/srv/data`, fetchable again or not, so the machine can be worked on without a
-data subscription, plus the secrets needed to rebuild it: [`backup/include.txt`](backup/include.txt) minus
+data subscription, plus the secrets needed to rebuild it, plus the research `results/` directories inside the
+algo-trading checkouts (data is archived, code is in git; a bridge until research writes results under `/srv/data`): [`backup/include.txt`](backup/include.txt) minus
 [`backup/exclude.txt`](backup/exclude.txt), which restic reads as they are. Left out is only what code derives from
 that data and can rebuild offline (the research memo table and bar cubes): 12 GB, 8 GB of it rewritten each month,
 which "monthly for ever" would otherwise keep permanently. It runs every night at 17:30, after the close
