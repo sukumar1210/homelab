@@ -17,3 +17,13 @@
 /srv/ops/secrets
 /srv/ops/deploy
 /home/sukumar/.config/market-recorder
+
+# Research RESULTS inside the algo-trading checkouts: data, not code, so they are archived where they lie (the
+# operator's rule: data is archived, code belongs in git). A BRIDGE: research is moving every writer to
+# /srv/data/algo/results/<experiment>/ (already covered above), and these lines go when that registered change lands.
+# restic expands the globs at each run, so a new worktree is picked up and a removed one is simply absent.
+/srv/sources/algo-trading/backtesting/*/results
+/srv/sources/algo-trading/.claude/worktrees/*/backtesting/*/results
+
+# homelab's own alert recipients (backup failures go to Telegram and WhatsApp through OpenAlgo)
+/home/sukumar/.config/homelab
