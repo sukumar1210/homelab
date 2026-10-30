@@ -77,5 +77,34 @@ class Mount(unittest.TestCase):
         backup.require_mount(Path("/"))
 
 
+class Nightly(unittest.TestCase):
+    """2026-10-28 23:10: a killed restic left its lock, and two nights failed after their snapshot."""
+
+    def run_main(self, codes):
+        calls, orig = [], (backup.subprocess.run, backup.require_mount, backup.stage, backup.REPO)
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "config").write_text("")
+
+        def fake(cmd, **k):
+            sub = cmd[len(backup.RESTIC)]
+            calls.append(sub)
+            return backup.subprocess.CompletedProcess(cmd, codes.get(sub, 0))
+        backup.subprocess.run, backup.require_mount, backup.stage, backup.REPO = fake, lambda p: None, lambda a, b: 0, tmp
+        try:
+            return backup.main(), calls
+        finally:
+            backup.subprocess.run, backup.require_mount, backup.stage, backup.REPO = orig
+            shutil.rmtree(tmp)
+
+    def test_PLANTED_stale_locks_are_cleared_before_retention_and_a_live_one_is_waited_for(self):
+        rc, calls = self.run_main({})
+        self.assertEqual((rc, calls), (0, ["backup", "unlock", "forget", "check"]))
+        self.assertIn("--retry-lock", backup.RESTIC, "a manual restic at 17:30 must be waited for, not fail the night")
+
+    def test_a_locked_forget_still_fails_the_night(self):
+        rc, calls = self.run_main({"forget": 11})
+        self.assertEqual((rc, calls), (1, ["backup", "unlock", "forget"]))
+
+
 if __name__ == "__main__":
     unittest.main()

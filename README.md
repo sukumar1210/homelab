@@ -70,7 +70,8 @@ which "monthly for ever" would otherwise keep permanently. It runs every night a
 and the evening collectors, as the user timer `homelab-backup.timer`. Each night:
 1. it stages OpenAlgo's state (SQLite through its online-backup API, since a copy of a live database file can tear);
 2. it writes one snapshot;
-3. it applies retention: 14 nightly, 8 weekly, and one a month for ever;
+3. it applies retention: 14 nightly, 8 weekly, and one a month for ever. First it clears locks left by a restic that
+   was killed (only those whose process is gone), and it waits up to 30 minutes for a live one;
 4. it reads back one seventh of the stored data and checks it against its hashes, so all of it is verified every week.
 
 `backup/backup.py`'s docstring has the reasons.
