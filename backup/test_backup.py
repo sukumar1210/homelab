@@ -5,10 +5,23 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import backup  # noqa: E402
+
+# No test reaches the network. On 2026-10-30 at 20:53 and 21:03 test_a_locked_forget_still_fails_the_night ran main()
+# with the real alert(), and the operator got two real "the nightly backup FAILED: restic forget exited 11" messages.
+REACHED = []
+
+
+def _no_network(req, *a, **k):
+    REACHED.append(getattr(req, "full_url", req))
+    raise OSError("the tests never reach the network")
+
+
+urllib.request.urlopen = _no_network
 
 
 class Stage(unittest.TestCase):
@@ -105,6 +118,19 @@ class Nightly(unittest.TestCase):
     def test_a_locked_forget_still_fails_the_night(self):
         rc, calls = self.run_main({"forget": 11})
         self.assertEqual((rc, calls), (1, ["backup", "unlock", "forget"]))
+
+    def test_PLANTED_a_failed_night_inside_the_tests_reaches_no_channel(self):
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "o.env").write_text("OPENALGO_API_KEY=k\n")
+        (tmp / "a.env").write_text("ALERT_TELEGRAM_USER=op\n")
+        s0, a0, n = backup.SECRETS, backup.ALERTS, len(REACHED)
+        backup.SECRETS, backup.ALERTS = tmp / "o.env", tmp / "a.env"
+        try:
+            self.assertEqual(self.run_main({"forget": 11})[0], 1)
+        finally:
+            backup.SECRETS, backup.ALERTS = s0, a0
+            shutil.rmtree(tmp)
+        self.assertEqual(len(REACHED) - n, 2, "both channels were attempted and both were stopped before the network")
 
     def test_PLANTED_a_failed_night_is_alerted_on_both_channels_and_a_good_one_is_not(self):
         sent, orig = [], backup.alert
